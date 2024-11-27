@@ -252,6 +252,7 @@ def minify(content: str) -> str:
     return python_minifier.minify(
         content,
         remove_annotations=True,
+        remove_literal_statements=True,
         remove_pass=True,
         rename_globals=True,
         remove_asserts=True,
