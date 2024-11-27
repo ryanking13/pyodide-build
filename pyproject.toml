@@ -27,6 +27,7 @@ dependencies = [
     "requests",
     "typer",
     "rich",
+    "python-minifier",
     # TODO: make this a extra dependency
     "resolvelib",
     "unearth~=0.6",

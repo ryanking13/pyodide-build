@@ -220,8 +220,9 @@ def make_command_wrapper_symlinks(symlink_dir: Path) -> dict[str, str]:
     # this is only for maintainers and *should* not be used by others
 
     pywasmcross_exe = symlink_dir / "pywasmcross.py"
-    pywasmcross_origin = pywasmcross.__file__
-    shutil.copy2(pywasmcross_origin, pywasmcross_exe)
+    pywasmcross_origin = Path(pywasmcross.__file__)
+    pywasmcross_minified = minify(pywasmcross_origin.read_text())
+    pywasmcross_exe.write_text(pywasmcross_minified)
     pywasmcross_exe.chmod(0o755)
 
     f2c_fixes_exe = symlink_dir / "_f2c_fixes.py"
@@ -240,6 +241,21 @@ def make_command_wrapper_symlinks(symlink_dir: Path) -> dict[str, str]:
             env[SYMLINK_ENV_VARS[symlink]] = str(symlink_path)
 
     return env
+
+
+def minify(content: str) -> str:
+    """
+    minified the Python code.
+    """
+    import python_minifier
+
+    return python_minifier.minify(
+        content,
+        remove_annotations=True,
+        remove_pass=True,
+        rename_globals=True,
+        remove_asserts=True,
+    )
 
 
 @contextmanager
