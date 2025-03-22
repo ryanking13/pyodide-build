@@ -318,6 +318,7 @@ def get_build_env(
         (symlink_dir / "pywasmcross_env.json").write_text(pywasmcross_env)
 
         env["_PYTHON_HOST_PLATFORM"] = platform()
+        env["MACOSX_DEPLOYMENT_TARGET"] = platform()  # scikit-build-core respects this variable instead of _PYTHON_HOST_PLATFORM in macos
         env["_PYTHON_SYSCONFIGDATA_NAME"] = get_build_flag("SYSCONFIG_NAME")
         env["PYTHONPATH"] = str(sysconfig_dir)
         env["COMPILER_WRAPPER_DIR"] = str(symlink_dir)
