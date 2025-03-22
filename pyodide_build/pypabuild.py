@@ -318,7 +318,6 @@ def get_build_env(
         (symlink_dir / "pywasmcross_env.json").write_text(pywasmcross_env)
 
         env["_PYTHON_HOST_PLATFORM"] = platform()
-        env["SETUPTOOLS_EXT_SUFFIX"] = ".cpython-312-wasm32-emscripten.so"
         env["_PYTHON_SYSCONFIGDATA_NAME"] = get_build_flag("SYSCONFIG_NAME")
         env["PYTHONPATH"] = str(sysconfig_dir)
         env["COMPILER_WRAPPER_DIR"] = str(symlink_dir)
