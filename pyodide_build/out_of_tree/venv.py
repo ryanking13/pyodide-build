@@ -70,10 +70,14 @@ class PyodideVenv(ABC):
         self.venv_bin: Path | None = None
 
     @property
-    @abstractmethod
+    def exe_suffix(self) -> str:
+        """Return the executable suffix for the platform."""
+        return ""
+
+    @property
     def python_exe_name(self) -> str:
         """Return the Python executable name for the platform."""
-        pass
+        return "python" + self.exe_suffix
 
     @property
     @abstractmethod
@@ -82,22 +86,19 @@ class PyodideVenv(ABC):
         pass
 
     @property
-    @abstractmethod
     def pyodide_exe_name(self) -> str:
         """Return the Pyodide executable name for the platform."""
-        pass
+        return "pyodide" + self.exe_suffix
 
     @property
-    @abstractmethod
     def host_python_name(self) -> str:
         """Get the host python executable name."""
-        pass
+        return f"python{get_pyversion()}-host" + self.exe_suffix
 
     @property
-    @abstractmethod
     def host_python_name_noversion(self) -> str:
         """Get the host python executable name without version."""
-        pass
+        return "python-host" + self.exe_suffix
 
     @property
     @abstractmethod
@@ -165,6 +166,14 @@ class PyodideVenv(ABC):
             raise RuntimeError("venv_bin is not set")
 
         return self.venv_bin / "pip_patched"
+
+    @property
+    def pip_wrapper_path(self) -> Path:
+        """Get the path to the pip wrapper script in the virtualenv."""
+        if self.venv_bin is None:
+            raise RuntimeError("venv_bin is not set")
+
+        return self.venv_bin / "_pip-wrapper.py"
 
     @property
     @abstractmethod
@@ -269,7 +278,7 @@ class PyodideVenv(ABC):
                 "-c",
                 dedent(
                     """
-                    import os, sys, sysconfig, platform
+                    import os, sys, sysconfig, platform;
                     print([
                         os.name,
                         sys.platform,
@@ -277,13 +286,15 @@ class PyodideVenv(ABC):
                         sys.implementation._multiarch,
                         sysconfig.get_platform()
                     ])
-                    """
+                    """.replace("\n", "")  # Windows doesn't seems to like newlines here...
                 ),
             ],
             err_msg="ERROR: failed to invoke Pyodide",
         )
         platform_data = result.stdout
         sysconfigdata_dir = Path(get_build_flag("TARGETINSTALLDIR")) / "sysconfigdata"
+        pip_patched_name = self.pip_patched_path.name
+        exe_suffix = self.exe_suffix
         return dedent(
             """\
             import os
@@ -331,6 +342,7 @@ class PyodideVenv(ABC):
             sys.platform = sys_platform
             sys.platlibdir = "lib"
             sys.implementation._multiarch = multiarch
+            sys.abiflags = getattr(sys, "abiflags", "")  # ensure abiflags exists even in Windows
             platform.system = lambda: platform_system
             platform.machine = lambda: "wasm32"
             os.environ["_PYTHON_HOST_PLATFORM"] = host_platform
@@ -347,7 +359,7 @@ class PyodideVenv(ABC):
             # have to restore the correct value of pip. Iterate through all of the
             # pip variants in the folder and remove them and replace with a symlink
             # to pip_patched.
-            """
+            f"""
             from pathlib import Path
 
             file_path = Path(__file__)
@@ -355,7 +367,7 @@ class PyodideVenv(ABC):
 
             def pip_is_okay():
                 try:
-                    return file_path.readlink() == file_path.with_name("pip_patched")
+                    return file_path.readlink() == file_path.with_name("{pip_patched_name}")
                 except OSError as e:
                     if e.strerror != "Invalid argument":
                         raise
@@ -367,13 +379,15 @@ class PyodideVenv(ABC):
                     return
 
                 venv_bin = file_path.parent
-                pip_patched = venv_bin / "pip_patched"
+                pip_patched = venv_bin / "{pip_patched_name}"
                 for pip in venv_bin.glob("pip*"):
                     if pip == pip_patched:
                         continue
                     pip.unlink(missing_ok=True)
-                    pip.symlink_to(venv_bin / "pip_patched")
-
+                    patched_pip_exe = pip.with_suffix("{exe_suffix}")
+                    if patched_pip_exe != self.pip_patched_path:
+                        patched_pip_exe.unlink(missing_ok=True)
+                        patched_pip_exe.symlink_to(self.pip_patched_path)
 
             import atexit
 
@@ -391,13 +405,20 @@ class PyodideVenv(ABC):
         # To support the "--clear" and "--no-clear" args, we need to remove
         # the existing symlinks before creating new ones.
         self.host_python_path.unlink(missing_ok=True)
-        self.host_python_path_no_version.unlink(missing_ok=True)
+        self.host_python_path_noversion.unlink(missing_ok=True)
         self.host_python_symlink_path.unlink(missing_ok=True)
+
+        # Replace all pip* scripts in the venv bin folder with symlinks to
+        # our patched pip script.
         for pip in self.venv_bin.glob("pip*"):
             if pip == self.pip_patched_path:
                 continue
             pip.unlink(missing_ok=True)
-            pip.symlink_to(self.pip_patched_path)
+
+            patched_pip_exe = pip.with_suffix(self.exe_suffix)
+            if patched_pip_exe != self.pip_patched_path:
+                patched_pip_exe.unlink(missing_ok=True)
+                patched_pip_exe.symlink_to(self.pip_patched_path)
 
         # Weird hack to work around:
         # https://github.com/astral-sh/python-build-standalone/issues/380
@@ -411,8 +432,23 @@ class PyodideVenv(ABC):
         self.host_python_path.chmod(0o777)
         self.host_python_path_noversion.symlink_to(self.host_python_path)
 
-        self.pip_patched_path.write_text( self.host_pip_wrapper)
+        self.pip_patched_path.write_text(self.host_pip_wrapper)
         self.pip_patched_path.chmod(0o777)
+        self.pip_wrapper_path.write_text(
+            (
+                self._get_pip_monkeypatch()
+                + dedent(
+                    """
+                    import re
+                    import sys
+                    from pip._internal.cli.main import main
+                    if __name__ == '__main__':
+                        sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])
+                        sys.exit(main())
+                    """
+                )
+            ).replace('\\', '\\\\')  # Escape backslashes for Windows batch files
+        )
 
     @abstractmethod
     def _create_pyodide_script(self) -> None:
@@ -466,29 +502,9 @@ class UnixPyodideVenv(PyodideVenv):
     """Unix-specific implementation of Pyodide virtual environment creation."""
 
     @property
-    def python_exe_name(self) -> str:
-        """Return the Python executable name for the platform."""
-        return "python"
-
-    @property
     def bin_dir_name(self) -> str:
         """Return the bin directory name for the platform."""
         return "bin"
-
-    @property
-    def pyodide_exe_name(self) -> str:
-        """Return the Pyodide executable name for the platform."""
-        return "pyodide"
-
-    @property
-    def host_python_name(self) -> str:
-        """Get the host python executable name."""
-        return f"python{get_pyversion()}-host"
-
-    @property
-    def host_python_name_noversion(self) -> str:
-        """Get the host python executable name without version."""
-        return "python-host"
 
     @property
     def host_python_symlink_name(self) -> str:
@@ -561,26 +577,15 @@ class UnixPyodideVenv(PyodideVenv):
             )
         )
 
-        # self.pyodide_cli_path.write_text(
-        #     dedent(
-        #     f"""
-        #     @echo off
-        #     set PATH={PATH};%PATH%
-        #     set PYODIDE_ROOT={PYODIDE_ROOT}
-        #     "{original_pyodide_cli}" %*
-        #     """
-        #     )
-        # )
-
         self.pyodide_cli_path.chmod(0o777)
 
 
 class WindowsPyodideVenv(PyodideVenv):
     """Windows-specific implementation of Pyodide virtual environment creation."""
     @property
-    def python_exe_name(self) -> str:
-        """Return the Python executable name."""
-        return "python.bat"
+    def exe_suffix(self) -> str:
+        """Return the executable suffix for the platform."""
+        return ".bat"
 
     @property
     def bin_dir_name(self) -> str:
@@ -588,56 +593,27 @@ class WindowsPyodideVenv(PyodideVenv):
         return "Scripts"
 
     @property
-    def pyodide_exe_name(self) -> str:
-        """Return the Pyodide executable name."""
-        return "pyodide.bat"
-
-    @property
-    def host_python_name(self) -> str:
-        """Get the host python executable name."""
-        return f"python{get_pyversion()}-host.bat"
-
-    @property
-    def host_python_name_noversion(self) -> str:
-        """Get the host python executable name without version."""
-        return "python-host.bat"
-
-    @property
     def host_python_symlink_name(self) -> str:
         """Get the host python symlink name."""
-        return "python-host-link.bat"
+        return "python-host-link.exe"
 
     @property
     def host_python_wrapper(self) -> str:
         """Get the content of the host python wrapper script.
-        This script allows invoking the host python with the correct PYTHONHOME.
+
+        TODO: In windows, it doesn't seem setting PYTHONHOME is required to make it correctly work.
         """
-        pythonhome = Path(sys._base_executable).parents[1]
         return dedent(f"""\
-            # @echo off
-            # set PYTHONHOME={pythonhome}
-            # "{self.host_python_symlink_name}" %*
-            # """)
+            @echo off
+            "{self.host_python_symlink_path}" %*
+            """)
 
     @property
     def host_pip_wrapper(self) -> str:
-        # Other than the shebang and the monkey patch, this is exactly what
-        # normal pip looks like.
         return (
-                "@echo off\r\n" +
-                f'"{self.host_python_path}" -s -x "%~f0" %*\r\n'
-                "exit /b %ERRORLEVEL%\r\n"
-                + self._get_pip_monkeypatch()
-                + dedent(
-                """
-                import re
-                import sys
-                from pip._internal.cli.main import main
-                if __name__ == '__main__':
-                    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])
-                    sys.exit(main())
-                """
-            )
+            "@echo off\n"
+            + f'"{self.host_python_path}" -s '
+            + f'"{self.pip_wrapper_path}"'
         )
 
     def _create_session(self):
@@ -660,9 +636,14 @@ class WindowsPyodideVenv(PyodideVenv):
         self.interpreter_symlink_path.unlink(missing_ok=True)
         self.interpreter_symlink_path.symlink_to(self.interpreter_path)
 
-        # Also remove the virtualenv-generated exe files as exe file takes precedence over .bat file
-        python_exe_in_venv = self.venv_bin / "python.exe"
-        python_exe_in_venv.unlink(missing_ok=True)
+        # Also symlink any other python*.exe files to the interpreter
+        other_pythons = self.venv_bin.glob("python*.exe")
+        for python_exe in other_pythons:
+            python_exe.unlink(missing_ok=True)
+            python_bat = python_exe.with_suffix(self.exe_suffix)
+            if python_bat != self.interpreter_symlink_path:
+                python_bat.unlink(missing_ok=True)
+                python_bat.symlink_to(self.interpreter_path)
 
     def _create_pyodide_script(self) -> None:
         """Write pyodide cli script into the virtualenv bin folder."""
