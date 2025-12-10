@@ -102,9 +102,25 @@ class PyodideVenv(ABC):
 
     @property
     @abstractmethod
-    def host_python_symlink_name(self) -> str:
-        """Get the host python symlink name."""
+    def host_python_symlink_suffix(self) -> str:
+        """Get the host python symlink suffix."""
         pass
+
+    @property
+    def venv_sitepackages_path(self) -> Path:
+        """
+        Path to the site-packages directory in the virtualenv, where packages are installed.
+
+        Note that in host environment, Windows uses 'Lib\\site-packages' while Unix uses 'lib/pythonX.Y/site-packages'.
+        However, Pyodide environment is Unix-like, so we always use the Unix-style path here so that packages are located correctly
+        inside the Pyodide virtual environment
+
+        TODO: This should be able to derived from virtualenv session info I guess?
+        """
+        if self.venv_root is None:
+            raise RuntimeError("venv_root is not set")
+
+        return self.venv_root / "lib" / f"python{get_pyversion()}" / "site-packages"
 
     @property
     def interpreter_path(self) -> Path:
@@ -149,7 +165,7 @@ class PyodideVenv(ABC):
         if self.venv_bin is None:
             raise RuntimeError("venv_bin is not set")
 
-        return self.venv_bin / self.host_python_symlink_name
+        return self.venv_bin / f"python{self.host_python_symlink_suffix}"
 
     @property
     def pip_conf_path(self) -> Path:
@@ -226,6 +242,7 @@ class PyodideVenv(ABC):
             # should contain the needed wheels. find-links
             repo = f"find-links={pyodide_dist_dir()}"
 
+        platform = f"pyodide_{get_build_flag("PYODIDE_ABI_VERSION")}_wasm32"
         # Prevent attempts to install binary wheels from source.
         # Maybe some day we can convince pip to invoke `pyodide build` as the build
         # front end for wheels...
@@ -234,6 +251,8 @@ class PyodideVenv(ABC):
                 f"""
                 [install]
                 only-binary=:all:
+                platform={platform}
+                target={self.venv_sitepackages_path}
                 {repo}
                 """
             )
@@ -306,12 +325,12 @@ class PyodideVenv(ABC):
             # python-host but we want the shebang of the executable that we install
             # to point to Pyodide python. We monkeypatch distlib.scripts.get_executable
             # to return the value with the host suffix removed.
-            """
+            f"""
             from pip._vendor.distlib import scripts
-            EXECUTABLE_SUFFIX = "-host-link"
+            EXECUTABLE_SUFFIX = "{self.host_python_symlink_suffix}"
             def get_executable():
                 if not sys.executable.endswith(EXECUTABLE_SUFFIX):
-                    raise RuntimeError(f'Internal Pyodide error: expected sys.executable="{sys.executable}" to end with "{EXECUTABLE_SUFFIX}"')
+                    raise RuntimeError(f'Internal Pyodide error: expected sys.executable="{{sys.executable}}" to end with "{{EXECUTABLE_SUFFIX}}"')
                 return sys.executable.removesuffix(EXECUTABLE_SUFFIX)
 
             scripts.get_executable = get_executable
@@ -338,15 +357,13 @@ class PyodideVenv(ABC):
             """
             f"""
             os_name, sys_platform, platform_system, multiarch, host_platform = {platform_data}
-            os.name = os_name
-            sys.platform = sys_platform
             sys.platlibdir = "lib"
             sys.implementation._multiarch = multiarch
             sys.abiflags = getattr(sys, "abiflags", "")  # ensure abiflags exists even in Windows
             platform.system = lambda: platform_system
             platform.machine = lambda: "wasm32"
             os.environ["_PYTHON_HOST_PLATFORM"] = host_platform
-            os.environ["_PYTHON_SYSCONFIGDATA_NAME"] = f'_sysconfigdata_{{sys.abiflags}}_{{sys.platform}}_{{sys.implementation._multiarch}}'
+            os.environ["_PYTHON_SYSCONFIGDATA_NAME"] = f'_sysconfigdata_{{sys.abiflags}}_{{sys_platform}}_{{sys.implementation._multiarch}}'
             sys.path.append("{sysconfigdata_dir}")
             import sysconfig
             sysconfig._init_config_vars()
@@ -362,7 +379,7 @@ class PyodideVenv(ABC):
             f"""
             from pathlib import Path
 
-            file_path = Path(__file__)
+            file_path = Path(__file__).parent / f"pip{exe_suffix}"
 
 
             def pip_is_okay():
@@ -385,9 +402,9 @@ class PyodideVenv(ABC):
                         continue
                     pip.unlink(missing_ok=True)
                     patched_pip_exe = pip.with_suffix("{exe_suffix}")
-                    if patched_pip_exe != self.pip_patched_path:
+                    if patched_pip_exe != pip_patched:
                         patched_pip_exe.unlink(missing_ok=True)
-                        patched_pip_exe.symlink_to(self.pip_patched_path)
+                        patched_pip_exe.symlink_to(pip_patched)
 
             import atexit
 
@@ -507,9 +524,9 @@ class UnixPyodideVenv(PyodideVenv):
         return "bin"
 
     @property
-    def host_python_symlink_name(self) -> str:
+    def host_python_symlink_suffix(self) -> str:
         """Get the host python symlink name."""
-        return "python-host-link"
+        return "-host-link"
 
     @property
     def host_python_wrapper(self) -> str:
@@ -593,9 +610,9 @@ class WindowsPyodideVenv(PyodideVenv):
         return "Scripts"
 
     @property
-    def host_python_symlink_name(self) -> str:
+    def host_python_symlink_suffix(self) -> str:
         """Get the host python symlink name."""
-        return "python-host-link.exe"
+        return "-host-link.exe"
 
     @property
     def host_python_wrapper(self) -> str:
@@ -609,11 +626,19 @@ class WindowsPyodideVenv(PyodideVenv):
             """)
 
     @property
+    def pip_conf_path(self) -> Path:
+        """Get the path to the pip.conf file in the virtualenv."""
+        if self.venv_root is None:
+            raise RuntimeError("venv_root is not set")
+
+        return self.venv_root / "pip.ini"
+
+    @property
     def host_pip_wrapper(self) -> str:
         return (
             "@echo off\n"
             + f'"{self.host_python_path}" -s '
-            + f'"{self.pip_wrapper_path}"'
+            + f'"{self.pip_wrapper_path}" %*\n'
         )
 
     def _create_session(self):
