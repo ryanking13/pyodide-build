@@ -42,6 +42,7 @@ from pyodide_build.common import (
     retag_wheel,
     retrying_rmtree,
     run_command,
+    copy_sharedlibs,
 )
 from pyodide_build.logger import logger
 from pyodide_build.recipe.bash_runner import (
@@ -776,38 +777,6 @@ def trim_archive_extension(tarballname: str) -> str:
         if tarballname.endswith(extension):
             return tarballname[: -len(extension)]
     return tarballname
-
-
-def copy_sharedlibs(
-    wheel_file: Path,
-    wheel_dir: Path,
-    lib_dir: Path,
-    modify_rpath=False,
-) -> dict[str, Path]:
-    from auditwheel_emscripten import copylib, modify_runtime_path, resolve_sharedlib
-    from auditwheel_emscripten.wheel_utils import WHEEL_INFO_RE
-
-    match = WHEEL_INFO_RE.match(wheel_file.name)
-    if match is None:
-        raise RuntimeError(f"Failed to parse wheel file name: {wheel_file.name}")
-
-    dep_map: dict[str, Path] = resolve_sharedlib(
-        wheel_dir,
-        lib_dir,
-    )
-    lib_sdir: str = match.group("name") + ".libs"
-    if dep_map:
-        dep_map_new = copylib(wheel_dir, dep_map, lib_sdir)
-        if modify_rpath:
-            modify_runtime_path(wheel_dir, lib_sdir)
-        logger.info("Copied shared libraries:")
-        for lib, path in dep_map_new.items():
-            original_path = dep_map[lib]
-            logger.info("  %s -> %s", original_path, path)
-
-        return dep_map_new
-
-    return {}
 
 
 # TODO: move this to common.py or somewhere else

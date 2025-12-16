@@ -216,6 +216,15 @@ def main(
         envvar="PYODIDE_XBUILDENV_PATH",
         help="Path to the cross-build environment directory.",
     ),
+    vendor_sharedlib: bool = typer.Option(
+        True,
+        "--vendor-sharedlib/--no-vendor-sharedlib",
+        help="Whether to copy shared libraries into the wheel and patch the rpath.",
+    ),
+    library_install_prefix: str = typer.Option(
+        "/lib",
+        help="The installation prefix inside the wheel where shared libraries are located.",
+    ),
     ctx: typer.Context = typer.Context,  # type: ignore[assignment]
 ) -> None:
     """Use pypa/build to build a Python package from source, pypi or url."""
