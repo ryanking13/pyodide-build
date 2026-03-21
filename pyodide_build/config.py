@@ -150,6 +150,10 @@ class CrossBuildEnvConfigManager(ConfigManager):
                 value = value.strip("'").strip()
                 environment[varname] = value
 
+            if "CFLAGS_BASE" in environment:
+                # Emscripten does not set fPIC to side modules anymore, we need to remove it from CFLAGS_BASE to avoid issues
+                environment["CFLAGS_BASE"] = environment["CFLAGS_BASE"].replace("-fPIC", "")
+
             return environment
 
 
@@ -307,7 +311,7 @@ DEFAULT_CONFIG_COMPUTED: dict[str, str] = {
     # Compiler flags
     "cflags": "$(CFLAGS_BASE) -I$(PYTHONINCLUDE) -Oz",
     "cxxflags": "$(CFLAGS_BASE) -Oz",
-    "ldflags": "$(LDFLAGS_BASE) -s SIDE_MODULE=1 -Oz -fPIC",
+    "ldflags": "$(LDFLAGS_BASE) -s SIDE_MODULE=1 -Oz",
     # Rust-specific configuration
     "pyo3_cross_lib_dir": "$(CPYTHONINSTALL)/sysconfigdata",  # FIXME: pyodide xbuildenv stores sysconfigdata here
     "pyo3_cross_include_dir": "$(PYTHONINCLUDE)",
