@@ -307,7 +307,7 @@ DEFAULT_CONFIG_COMPUTED: dict[str, str] = {
     # Compiler flags
     "cflags": "$(CFLAGS_BASE) -I$(PYTHONINCLUDE) -Oz",
     "cxxflags": "$(CFLAGS_BASE) -Oz",
-    "ldflags": "$(LDFLAGS_BASE) -s SIDE_MODULE=1 -Oz",
+    "ldflags": "$(LDFLAGS_BASE) -s SIDE_MODULE=1 -Oz -fPIC",
     # Rust-specific configuration
     "pyo3_cross_lib_dir": "$(CPYTHONINSTALL)/sysconfigdata",  # FIXME: pyodide xbuildenv stores sysconfigdata here
     "pyo3_cross_include_dir": "$(PYTHONINCLUDE)",
