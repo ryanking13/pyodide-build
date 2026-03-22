@@ -562,7 +562,9 @@ def handle_command_generate_args(  # noqa: C901
         line[0] = "emranlib"
         return line
     elif cmd == "strip":
-        line[0] = "emstrip"
+        # FIXME: strip removes the dylink.0 section from the side module in Emscripten 5.0.3
+        # which causes the module to fail to load. For now, just skip stripping.
+        line[0] = "echo"
         return line
     else:
         return line
